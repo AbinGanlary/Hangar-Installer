@@ -233,3 +233,58 @@ private extension RefreshAllAppsIntent
         }
     }
 }
+
+// MARK: - Hangar
+
+/// Installs the IPA that Hangar staged, without showing any SideStore screen.
+/// Hangar writes the IPA's path to the shared app-group defaults under `HangarPendingInstallPath`,
+/// then runs this intent in the background (the same way it runs Refresh All Apps) and shows
+/// the progress in its own UI. Parameterless on purpose: Hangar's background runner can't pass
+/// intent parameters.
+@available(iOS 17.0, tvOS 17.0, *)
+struct InstallStagedIPAIntent: AppIntent, ProgressReportingIntent
+{
+    static let pendingPathKey = "HangarPendingInstallPath"
+    static let resultKey = "HangarLastInstallResult"
+
+    static var title: LocalizedStringResource = "Install Staged IPA"
+    static var description = IntentDescription("Installs the IPA prepared by Hangar.")
+    static var openAppWhenRun = false
+    static var isDiscoverable: Bool { false }
+
+    init()
+    {
+        self.progress.completedUnitCount = 0
+        self.progress.totalUnitCount = 1
+    }
+
+    func perform() async throws -> some IntentResult
+    {
+        let defaults = Bundle.main.altstoreAppGroup.flatMap { UserDefaults(suiteName: $0) } ?? .standard
+        do
+        {
+            guard let path = defaults.string(forKey: Self.pendingPathKey), FileManager.default.fileExists(atPath: path) else {
+                throw CocoaError(.fileNoSuchFile, userInfo: [NSLocalizedDescriptionKey: "Hangar couldn't find the IPA to install."])
+            }
+            defaults.removeObject(forKey: Self.pendingPathKey)
+
+            try await DatabaseManager.shared.start()
+
+            let intentProgress = self.progress
+            _ = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<InstalledApp, Error>) in
+                let group = AppManager.shared.install(.url(URL(fileURLWithPath: path))) { result in
+                    continuation.resume(with: result)
+                }
+                intentProgress.addChild(group.progress, withPendingUnitCount: 1)
+            }
+            defaults.set("ok", forKey: Self.resultKey)
+            try? FileManager.default.removeItem(atPath: path)
+            return .result()
+        }
+        catch
+        {
+            defaults.set("error:\(error.localizedDescription)", forKey: Self.resultKey)
+            throw IntentError(error)
+        }
+    }
+}
