@@ -933,3 +933,61 @@ public final class HangarAuthBridge: NSObject {
         }
     }
 }
+
+/// Hangar: deactivate / activate native apps without SideStore's UI (Library in Hangar).
+/// Deactivating removes the app from the phone but keeps its data (backed up the usual way) and frees
+/// one of the free account's 3 active slots; activating installs it again with its data.
+/// Called by Hangar's background bridge as +[HangarAppsBridge performAction:bundleID:completion:].
+@objc(HangarAppsBridge)
+public final class HangarAppsBridge: NSObject {
+    @objc(performAction:bundleID:completion:)
+    public static func perform(action: String, bundleID: String, completion: @escaping @Sendable (String?) -> Void) {
+        Task { @MainActor in
+            do {
+                try await DatabaseManager.shared.start()
+                let context = DatabaseManager.shared.viewContext
+                let predicate = NSPredicate(format: "%K == %@", #keyPath(InstalledApp.bundleIdentifier), bundleID)
+                guard let app = InstalledApp.first(satisfying: predicate, in: context) else {
+                    throw OperationError.invalidParameters("Hangar couldn't find \(bundleID) among its native apps.")
+                }
+                if let host = InstalledApp.fetchAltStore(in: context), host.bundleIdentifier == app.bundleIdentifier {
+                    throw OperationError.invalidParameters("Hangar can't deactivate itself.")
+                }
+
+                switch action {
+                case "deactivate":
+                    guard app.isActive else { completion(nil); return }
+                    app.isActive = false
+                    do {
+                        _ = try await run { AppManager.shared.deactivate(app, presentingViewController: nil, completionHandler: $0) }
+                    } catch {
+                        app.isActive = true
+                        throw error
+                    }
+                case "activate":
+                    guard !app.isActive else { completion(nil); return }
+                    let activeCount = InstalledApp.fetchActiveApps(in: context).count
+                    if !UserDefaults.standard.isAppLimitDisabled, let limit = UserDefaults.standard.activeAppsLimit, activeCount >= limit {
+                        throw OperationError.invalidParameters("All \(limit) slots are in use. Deactivate an app first.")
+                    }
+                    _ = try await run { AppManager.shared.activate(app, presentingViewController: nil, completionHandler: $0) }
+                    app.isActive = true
+                default:
+                    throw OperationError.invalidParameters("Unknown action \(action).")
+                }
+                try? context.save()
+                await WidgetDataManager.publishCurrentInstalledApps(in: context)
+                completion(nil)
+            } catch {
+                completion(error.localizedDescription)
+            }
+        }
+    }
+
+    @MainActor
+    private static func run(_ start: (@escaping (Result<InstalledApp, Error>) -> Void) -> Void) async throws -> InstalledApp {
+        try await withCheckedThrowingContinuation { continuation in
+            start { result in continuation.resume(with: result) }
+        }
+    }
+}

@@ -246,6 +246,7 @@ struct InstallStagedIPAIntent: AppIntent, ProgressReportingIntent
 {
     static let pendingPathKey = "HangarPendingInstallPath"
     static let resultKey = "HangarLastInstallResult"
+    static let extensionChoiceKey = "HangarExtensionChoice"
 
     static var title: LocalizedStringResource = "Install Staged IPA"
     static var description = IntentDescription("Installs the IPA prepared by Hangar.")
@@ -269,6 +270,17 @@ struct InstallStagedIPAIntent: AppIntent, ProgressReportingIntent
             defaults.removeObject(forKey: Self.pendingPathKey)
 
             try await DatabaseManager.shared.start()
+
+            // Hangar asks about app extensions in its own install dialog and passes the answer here
+            // ("keep-all", "use-main-profile" or "remove-all"). Without an answer the installer's
+            // screenless default applies. The user's own setting is restored afterwards.
+            let previousExtensionSetting = UserDefaults.standard.customizeAppExtensions
+            if let raw = defaults.string(forKey: Self.extensionChoiceKey),
+               let choice = AppExtensionCustomization(rawValue: raw) {
+                UserDefaults.standard.customizeAppExtensions = choice
+            }
+            defaults.removeObject(forKey: Self.extensionChoiceKey)
+            defer { UserDefaults.standard.customizeAppExtensions = previousExtensionSetting }
 
             let intentProgress = self.progress
             _ = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<InstalledApp, Error>) in
