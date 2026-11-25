@@ -153,10 +153,20 @@ public actor AnisetteConfigManager {
         )
     }
 
+    // Hangar: since 2026-11-20 Apple's GSA endpoint answers 503 when X-Mme-Client-Info says "macOS;"
+    // (SideStore issue #1745). "Mac OS X;" with a current version gets through. Applied to whatever
+    // value is in use (default, override, or fetched from a server), so a reset can't bring the 503 back.
+    // Needs proper testing beyond the one account it was confirmed on.
+    static let hangarClientInfo = "<MacBookPro13,3> <Mac OS X;26.6;25F84> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+
+    static func hangarFixedClientInfo(_ value: String) -> String {
+        value.contains("macOS;") ? hangarClientInfo : value
+    }
+
     public func makeRequestHeaders() -> AnisetteRequestHeaders {
         let config = loadConfig()
         return AnisetteRequestHeaders().with {
-            $0.clientInfo = config.clientInfo.isEmpty ? AppConstants.Anisette.defaultClientInfo : config.clientInfo
+            $0.clientInfo = Self.hangarFixedClientInfo(config.clientInfo.isEmpty ? AppConstants.Anisette.defaultClientInfo : config.clientInfo)
             $0.userAgent  = config.userAgent.isEmpty ? AppConstants.Anisette.defaultUserAgent : config.userAgent
             if let customLU = config.customLocalUserID, !customLU.isEmpty { $0.localUserID = customLU }
             if let customDev = config.customDeviceID, !customDev.isEmpty { $0.deviceID = customDev }

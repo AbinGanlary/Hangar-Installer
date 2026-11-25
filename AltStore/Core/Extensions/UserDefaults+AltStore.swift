@@ -549,10 +549,12 @@ public extension UserDefaults
             #keyPath(UserDefaults.isIdleTimeoutDisableEnabled): true,
             #keyPath(UserDefaults.betaUdpatesTrack): defaultBetaUpdatesTrack,
             #keyPath(UserDefaults.menuAnisetteList): AppConstants.Anisette.Servers.defaultSource,
-            #keyPath(UserDefaults.menuAnisetteURL): AppConstants.Anisette.Servers.defaultServerURL,
+            // Hangar: a Mac-based anisette server that works with the Mac OS X client info (SideStore #1745)
+            #keyPath(UserDefaults.menuAnisetteURL): "https://mac-ani.jkcoxson.com",
             #keyPath(UserDefaults.isAnisetteOfflineMode): false,
-            #keyPath(UserDefaults.disableAnisetteRotation): false,
-            #keyPath(UserDefaults.useOnDeviceAnisette): true,
+            // Hangar: keep the chosen server, and use remote anisette (on-device gives ADI -45063 on iOS 27)
+            #keyPath(UserDefaults.disableAnisetteRotation): true,
+            #keyPath(UserDefaults.useOnDeviceAnisette): false,
             #keyPath(UserDefaults.useLocalVPN): true,
             #keyPath(UserDefaults.acceptIPv6ConnectionConfig): false,
             #keyPath(UserDefaults.isAutoRetryRemotePairingPortEnabled): true,

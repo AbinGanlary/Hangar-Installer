@@ -230,4 +230,45 @@ final class PairingFileManager: NSObject {
         persistedActiveProtocol = nil
         debugLog("[PairingFile] Reset all pairing files.")
     }
+
+    // Hangar: Wireless Pairing saves its record as "<Device>_<Model>_rp.plist" in Documents, but the
+    // connection only loads the active pairing file (PairingFile_RemoteRP.plist etc.). When no pairing
+    // file is active, adopt the newest such record as the remote-pairing file. Needs proper testing.
+    func adoptWirelessPairingRecordIfNeeded() {
+        let fm = FileManager.default
+        let docs = fm.documentsDirectory
+
+        // Hangar's "Import pairing file" drops a file under the legacy name. Import it every time one
+        // is there (the user just chose it), replacing the active pairing, then remove the drop file.
+        let dropped = docs.appendingPathComponent(AppConstants.Pairing.legacyPairingFileName)
+        if fm.fileExists(atPath: dropped.path) {
+            do {
+                try importPairingFile(from: dropped)
+                debugLog("[PairingFile] Imported pairing file dropped by Hangar.")
+            } catch {
+                debugLog("[PairingFile] Pairing file dropped by Hangar is not valid: \(error)")
+            }
+            try? fm.removeItem(at: dropped)
+        }
+
+        guard !hasPairingFile() else { return }
+        guard let names = try? fm.contentsOfDirectory(atPath: docs.path) else { return }
+        let records = names
+            .filter { $0.hasSuffix("_rp.plist") && $0 != AppConstants.Pairing.remotePairingFileName }
+            .map { docs.appendingPathComponent($0) }
+            .sorted {
+                let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return a > b
+            }
+        for url in records {
+            do {
+                try importPairingFile(from: url, preferred: .rppairing)
+                debugLog("[PairingFile] Adopted wireless pairing record '\(url.lastPathComponent)' as the active pairing file.")
+                return
+            } catch {
+                debugLog("[PairingFile] Could not adopt '\(url.lastPathComponent)': \(error)")
+            }
+        }
+    }
 }

@@ -517,6 +517,7 @@ final class WirelessPairViewModel: ObservableObject {
                     self.statusText = "Success!"
                     self.subStatusText = "Successfully paired with \(device.name) (\(device.model))!\nPairing file saved to documents."
                     self.shareSheetURL = URL(fileURLWithPath: device.pairingFilePath)
+                    PairingFileManager.shared.adoptWirelessPairingRecordIfNeeded() // Hangar
                     self.isShareSheetPresented = true
                 case .failure(let error):
                     debugLog("[WirelessPairViewModel] startPairing() FAILURE: error='\(error.localizedDescription)'")
@@ -580,6 +581,7 @@ final class WirelessPairViewModel: ObservableObject {
                     self.statusText = "Success!"
                     self.subStatusText = "Successfully paired with \(device.name) (\(device.model))!\nPairing file saved to documents."
                     self.shareSheetURL = URL(fileURLWithPath: device.pairingFilePath)
+                    PairingFileManager.shared.adoptWirelessPairingRecordIfNeeded() // Hangar
                     self.isShareSheetPresented = true
                 case .failure(let error):
                     debugLog("[WirelessPairViewModel] triggerPairing() FAILURE: error='\(error.localizedDescription)'")
