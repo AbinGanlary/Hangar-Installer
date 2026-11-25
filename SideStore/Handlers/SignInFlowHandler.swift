@@ -770,3 +770,166 @@ class SignInFlowHandler: AnyObject, SignInHandler, AnisetteServerHandler {
         }
     }
 }
+
+// MARK: - Hangar
+
+/// Sign-in handler for Hangar's own sign-in screen: no SideStore UI. The Apple ID and password come
+/// from Hangar, 2FA codes are asked for through `codeProvider` (Hangar shows its own code field),
+/// and every other decision takes the safe default. Needs proper testing beyond a free account.
+final class HangarSignInHandler: SignInHandler, AnisetteServerHandler, @unchecked Sendable {
+    /// Returns the code the user typed, "sms" to get the code by text message instead, or nil to cancel.
+    typealias CodeProvider = @Sendable (_ prompt: String, _ error: String?, _ canUseSMS: Bool) async -> String?
+
+    private let appleID: String
+    private let password: String
+    private let codeProvider: CodeProvider
+    private var credentialRequests = 0
+    private var lastSignInError: Error?
+    private var deviceRegistrationRetries = 0
+    private var provisioningRetries = 0
+
+    init(appleID: String, password: String, codeProvider: @escaping CodeProvider) {
+        self.appleID = appleID
+        self.password = password
+        self.codeProvider = codeProvider
+    }
+
+    func credentials() async throws -> (String, String) {
+        // SignInOperation asks again after a failed attempt; Hangar's screen handles retries itself.
+        credentialRequests += 1
+        if credentialRequests > 1 {
+            throw lastSignInError ?? OperationError.cancelled
+        }
+        return (appleID, password)
+    }
+
+    func handleSignInResult(_ result: Result<(ALTAccount, ALTAppleAPISession), Error>) async {
+        if case .failure(let error) = result {
+            lastSignInError = error
+        }
+    }
+
+    func verificationCode(for request: TwoFactorRequest) async throws -> TwoFactorResponse {
+        switch request {
+        case .selectDeliveryMethod:
+            // Prefer a code on the user's other Apple devices; the code screen offers SMS as well.
+            return .requestTrustedDevice
+
+        case .trustedDevice:
+            return await askForCode(
+                prompt: "Enter the 6-digit code shown on your other Apple device.",
+                error: request.error,
+                smsPhoneID: "1")
+
+        case .sms(let phoneNumbers, let activeID, _):
+            let number = phoneNumbers.first(where: { $0.id == activeID })?.number ?? ""
+            return await askForCode(
+                prompt: number.isEmpty ? "Enter the 6-digit code sent by text message."
+                                       : "Enter the 6-digit code sent by text message to \(number).",
+                error: request.error,
+                smsPhoneID: activeID)
+
+        case .voice(let phoneNumbers, let activeID, _):
+            let number = phoneNumbers.first(where: { $0.id == activeID })?.number ?? ""
+            return await askForCode(
+                prompt: number.isEmpty ? "Enter the 6-digit code from the phone call."
+                                       : "Enter the 6-digit code from the phone call to \(number).",
+                error: request.error,
+                smsPhoneID: activeID)
+        }
+    }
+
+    private func askForCode(prompt: String, error: String?, smsPhoneID: String) async -> TwoFactorResponse {
+        guard let reply = await codeProvider(prompt, error, true) else { return .cancel }
+        if reply == "sms" { return .requestSMS(phoneID: smsPhoneID) }
+        return .verificationCode(reply)
+    }
+
+    func accountRepair(url: URL, message: String) async -> AccountRepairDecision {
+        // Needs a browser; Hangar reports the error and the user fixes it at account.apple.com.
+        lastSignInError = OperationError.invalidParameters("Apple ID needs attention: \(message)")
+        return .cancel
+    }
+
+    func resolveTeam(_ teams: [ALTTeam]) async throws -> ALTTeam {
+        if let free = teams.first(where: { $0.type == .free }) { return free }
+        if let first = teams.first { return first }
+        throw OperationError.notAuthenticated
+    }
+
+    func resolveProvisioningError(_ error: Error) async -> ProvisioningErrorDecision {
+        guard provisioningRetries < 1 else { return .cancel }
+        provisioningRetries += 1
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        return .retry
+    }
+
+    func resolveDeviceRegistrationErrors(_ error: Error) async -> ProvisioningErrorDecision {
+        // Usually LocalDevVPN still coming up (DeviceEndpointNotInitialized): wait and retry a few times.
+        guard deviceRegistrationRetries < 3 else { return .cancel }
+        deviceRegistrationRetries += 1
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        return .retry
+    }
+
+    func resolveRevocation(certificates: [ALTX509Certificate], teamType: ALTTeamType) async throws -> RevokeDecision {
+        // Never revoke certificates silently: apps signed with them would stop opening.
+        return .keepExisting
+    }
+
+    func resolveResign(mismatchReason: CodeSignValidationReason, context: StandaloneOperationContext) async throws -> Bool {
+        // Don't reinstall Hangar itself during sign-in; it is re-signed on its next refresh.
+        return false
+    }
+
+    func warnOutdatedAnisetteServer() async throws -> Bool {
+        lastSignInError = OperationError.invalidParameters("The anisette server is outdated. Pick another one in Account & signing.")
+        return false
+    }
+
+    func resolvePostAuth() async {}
+    func showCertificateSkipAcknowledgment() async {}
+    func showDeviceRegistrationSkipAcknowledgment() async {}
+    func complete() async {}
+}
+
+/// Objective-C entry points Hangar's background bridge (SideStoreSupport in the LiveProcess) calls by name.
+@objc(HangarAuthBridge)
+public final class HangarAuthBridge: NSObject {
+    /// codeProvider(prompt, error, canUseSMS, reply): reply with the code, "sms", or nil to cancel.
+    @objc public static func signIn(
+        appleID: String,
+        password: String,
+        codeProvider: @escaping @Sendable (String, String?, Bool, @escaping @Sendable (String?) -> Void) -> Void,
+        completion: @escaping @Sendable (String?) -> Void
+    ) {
+        Task {
+            do {
+                try await DatabaseManager.shared.start()
+                let handler = HangarSignInHandler(appleID: appleID, password: password) { prompt, error, canUseSMS in
+                    await withCheckedContinuation { continuation in
+                        codeProvider(prompt, error, canUseSMS) { reply in
+                            continuation.resume(returning: reply)
+                        }
+                    }
+                }
+                try await AuthManager.shared.hangarSignIn(handler: handler)
+                completion(nil)
+            } catch {
+                completion(error.localizedDescription)
+            }
+        }
+    }
+
+    @objc public static func signOut(completion: @escaping @Sendable (String?) -> Void) {
+        Task {
+            do {
+                try await DatabaseManager.shared.start()
+                await AuthManager.shared.signOut()
+                completion(nil)
+            } catch {
+                completion(error.localizedDescription)
+            }
+        }
+    }
+}

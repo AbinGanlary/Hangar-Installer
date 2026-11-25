@@ -166,6 +166,26 @@ public final class AuthManager: @unchecked Sendable {
         self.session = result.session
         return result
     }
+
+    // Hangar: the same sign-in pipeline with a handler that shows no SideStore UI.
+    // Hangar asks for the Apple ID, password and 2FA code in its own screen. Needs proper testing.
+    @discardableResult
+    func hangarSignIn(handler: HangarSignInHandler) async throws -> SignInResult {
+        let dbBackgroundContext = DatabaseManager.shared.persistentContainer.newBackgroundContext()
+        let context = StandaloneOperationContext(
+            steps: .signIn,
+            dbBackgroundContext: dbBackgroundContext
+        )
+        let signInOperation = try SignInOperation(
+            context: context,
+            signInHandler: handler,
+            anisetteServerHandler: handler
+        )
+        let result = try await signInOperation.execute()
+        self.team = result.team
+        self.session = result.session
+        return result
+    }
     
     
     // Developer Portal Operations
